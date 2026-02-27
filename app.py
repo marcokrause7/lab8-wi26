@@ -18,6 +18,11 @@ class PostCreate(BaseModel):
     body: str
 
 
+class CommentCreate(BaseModel):
+    post_id: int
+    body: str
+
+
 def get_db():
     conn = mysql.connector.connect(
         host=os.environ["DB_HOST"],
@@ -188,9 +193,90 @@ def get_user_posts(user_id: int, conn=Depends(get_db)):
     }
 
 
-# TODO: Add Pydantic model for CommentCreate
-# TODO: Add CRUD endpoints for comments
-# TODO: Add GET /posts/{post_id}/comments endpoint
-#       Follow the pattern in get_user_posts above:
-#       use a JOIN between posts and comments to return
-#       {"post": {post fields}, "comments": [{comment fields}, ...]}
+@app.post("/comments")
+def create_comment(comment: CommentCreate, conn=Depends(get_db)):
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO comments (post_id, body) VALUES (%s, %s)", (comment.post_id, comment.body))
+    conn.commit()
+    comment_id = cursor.lastrowid
+    cursor.close()
+    return {"id": comment_id, "post_id": comment.post_id, "body": comment.body}
+
+
+@app.get("/comments")
+def list_comments(conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM comments")
+    comments = cursor.fetchall()
+    cursor.close()
+    return comments
+
+
+@app.get("/comments/{comment_id}")
+def get_comment(comment_id: int, conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM comments WHERE id = %s", (comment_id,))
+    comment = cursor.fetchone()
+    cursor.close()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return comment
+
+
+@app.put("/comments/{comment_id}")
+def update_comment(comment_id: int, comment: CommentCreate, conn=Depends(get_db)):
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE comments SET post_id = %s, body = %s WHERE id = %s",
+        (comment.post_id, comment.body, comment_id),
+    )
+    conn.commit()
+    cursor.close()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return {"id": comment_id, "post_id": comment.post_id, "body": comment.body}
+
+
+@app.delete("/comments/{comment_id}")
+def delete_comment(comment_id: int, conn=Depends(get_db)):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM comments WHERE id = %s", (comment_id,))
+    conn.commit()
+    cursor.close()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return {"detail": "Comment deleted"}
+
+
+@app.get("/posts/{post_id}/comments")
+def get_post_comments(post_id: int, conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT posts.id AS post_id, posts.user_id, posts.title, posts.body AS post_body, "
+        "comments.id AS comment_id, comments.body AS comment_body, comments.created_at "
+        "FROM comments JOIN posts ON comments.post_id = posts.id "
+        "WHERE posts.id = %s",
+        (post_id,),
+    )
+    comments = cursor.fetchall()
+    if not comments:
+        cursor.execute("SELECT * FROM posts WHERE id = %s", (post_id,))
+        post = cursor.fetchone()
+        cursor.close()
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found")
+        return {"post": post, "comments": []}
+    cursor.close()
+    post = {
+        "id": comments[0]["post_id"],
+        "user_id": comments[0]["user_id"],
+        "title": comments[0]["title"],
+        "body": comments[0]["post_body"],
+    }
+    return {
+        "post": post,
+        "comments": [
+            {"id": c["comment_id"], "body": c["comment_body"], "created_at": c["created_at"]}
+            for c in comments
+        ],
+    }
